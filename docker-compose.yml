@@ -1,0 +1,20 @@
+# Local one-command run of the model server.
+# Builds the image (which trains the model at build time) and serves it on :8000.
+#   docker compose up --build
+# Then: curl localhost:8000/health  and  curl localhost:8000/metrics
+services:
+  model-server:
+    build: .
+    image: mlops-model-serving:local
+    ports:
+      - "8000:8000"
+    environment:
+      # Path the app loads the model artifact from (baked into the image at build).
+      MODEL_PATH: /app/model.joblib
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
