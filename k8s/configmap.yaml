@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlops-model-serving-config
+  labels:
+    app: mlops-model-serving
+data:
+  # Path where the app looks for the model artifact. The image bakes the
+  # model at /app/model.joblib during build, so this matches the default.
+  MODEL_PATH: "/app/model.joblib"
+  # Port the uvicorn server binds to inside the container.
+  PORT: "8000"
