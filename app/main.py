@@ -4,6 +4,7 @@ Endpoints:
     GET  /health   -> liveness: process is up and serving.
     GET  /ready    -> readiness: model artifact is loaded and usable.
     POST /predict   -> classify a single sample -> class + probabilities.
+    POST /predict/batch -> classify many samples in one vectorised call.
     GET  /metrics   -> Prometheus exposition of request/inference metrics.
 """
 
@@ -44,6 +45,15 @@ PREDICTION_LATENCY = Histogram(
     "model_prediction_latency_seconds",
     "Latency of the inference call for /predict.",
 )
+BATCH_SIZE = Histogram(
+    "model_batch_size",
+    "Number of samples per /predict/batch request.",
+    buckets=(1, 2, 5, 10, 25, 50, 100),
+)
+
+# Cap batch requests so a single call cannot exhaust memory or block the
+# event loop for an unbounded amount of time.
+MAX_BATCH_SIZE = 100
 
 
 # --- Request / response schemas --------------------------------------------
@@ -67,6 +77,28 @@ class PredictResponse(BaseModel):
     class_name: str = Field(..., description="Predicted Iris species name.")
     probabilities: list[float] = Field(
         ..., description="Per-class probabilities aligned with model classes."
+    )
+
+
+class BatchPredictRequest(BaseModel):
+    """Input payload for /predict/batch."""
+
+    samples: list[list[float]] = Field(
+        ...,
+        description=(
+            "A non-empty list of Iris samples, each being four measurements "
+            "in centimetres: [sepal length, sepal width, petal length, "
+            "petal width]."
+        ),
+        json_schema_extra={"example": [[5.1, 3.5, 1.4, 0.2], [6.7, 3.0, 5.2, 2.3]]},
+    )
+
+
+class BatchPredictResponse(BaseModel):
+    """Output payload for /predict/batch."""
+
+    predictions: list[PredictResponse] = Field(
+        ..., description="One prediction per input sample, in request order."
     )
 
 
@@ -117,6 +149,61 @@ def predict(request: PredictRequest) -> PredictResponse:
         class_id=result.class_id,
         class_name=result.class_name,
         probabilities=result.probabilities,
+    )
+
+
+@app.post(
+    "/predict/batch", response_model=BatchPredictResponse, tags=["inference"]
+)
+def predict_batch(request: BatchPredictRequest) -> BatchPredictResponse:
+    """Classify many Iris samples in a single vectorised inference call."""
+    n_samples = len(request.samples)
+    if n_samples == 0:
+        PREDICTION_ERRORS.inc()
+        raise HTTPException(
+            status_code=422, detail="Expected at least one sample, got none."
+        )
+    if n_samples > MAX_BATCH_SIZE:
+        PREDICTION_ERRORS.inc()
+        raise HTTPException(
+            status_code=422,
+            detail=f"Batch too large: {n_samples} > {MAX_BATCH_SIZE} samples.",
+        )
+    for index, features in enumerate(request.samples):
+        if len(features) != N_FEATURES:
+            PREDICTION_ERRORS.inc()
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Sample {index}: expected {N_FEATURES} features, "
+                    f"got {len(features)}."
+                ),
+            )
+
+    try:
+        start = time.perf_counter()
+        results = model_module.predict_batch(request.samples)
+        PREDICTION_LATENCY.observe(time.perf_counter() - start)
+    except ModelNotLoadedError as exc:
+        PREDICTION_ERRORS.inc()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        PREDICTION_ERRORS.inc()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    BATCH_SIZE.observe(n_samples)
+    for result in results:
+        PREDICTION_COUNTER.labels(predicted_class=result.class_name).inc()
+
+    return BatchPredictResponse(
+        predictions=[
+            PredictResponse(
+                class_id=result.class_id,
+                class_name=result.class_name,
+                probabilities=result.probabilities,
+            )
+            for result in results
+        ]
     )
 
 

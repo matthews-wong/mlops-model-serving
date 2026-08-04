@@ -97,14 +97,48 @@ def predict(features: list[float]) -> Prediction:
             f"Expected {N_FEATURES} features, received {len(features)}."
         )
 
+    return predict_batch([features])[0]
+
+
+def predict_batch(samples: list[list[float]]) -> list[Prediction]:
+    """Classify several Iris samples in a single vectorised model call.
+
+    Batching amortises the per-call overhead of ``predict``/``predict_proba``
+    across the whole request instead of paying it once per sample.
+
+    Args:
+        samples: A non-empty list of samples, each with exactly ``N_FEATURES``
+            measurements in the order
+            [sepal length, sepal width, petal length, petal width] (cm).
+
+    Returns:
+        One :class:`Prediction` per input sample, in the same order.
+
+    Raises:
+        ValueError: If ``samples`` is empty or any sample does not have
+            length ``N_FEATURES``.
+        ModelNotLoadedError: If the model artifact is unavailable.
+    """
+    if not samples:
+        raise ValueError("Expected at least one sample, received none.")
+    for index, features in enumerate(samples):
+        if len(features) != N_FEATURES:
+            raise ValueError(
+                f"Sample {index}: expected {N_FEATURES} features, "
+                f"received {len(features)}."
+            )
+
     model = load_model()
-    sample = np.asarray(features, dtype=float).reshape(1, -1)
+    matrix = np.asarray(samples, dtype=float).reshape(len(samples), N_FEATURES)
 
-    class_id = int(model.predict(sample)[0])
-    proba = model.predict_proba(sample)[0].astype(float).tolist()
+    class_ids = model.predict(matrix).astype(int).tolist()
+    probabilities = model.predict_proba(matrix).astype(float).tolist()
 
-    return Prediction(
-        class_id=class_id,
-        class_name=CLASS_NAMES[class_id],
-        probabilities=proba,
-    )
+    return [
+        Prediction(
+            class_id=class_id,
+            class_name=CLASS_NAMES[class_id],
+            probabilities=proba,
+        )
+        for class_id, proba in zip(class_ids, probabilities, strict=True)
+    ]
