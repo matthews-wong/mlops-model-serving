@@ -45,6 +45,8 @@ flowchart LR
 - **FastAPI service** with typed request/response models (Pydantic v2).
 - **Separated probes:** `/health` (liveness — process up) vs `/ready`
   (readiness — model artifact actually loaded).
+- **Model metadata** at `/model` — version, algorithm, class names, feature
+  count, and the artifact's trained-at timestamp for provenance/debugging.
 - **Prometheus metrics** at `/metrics` (prediction counts, errors, latency).
 - **Reproducible training** with a stratified holdout split and an
   auto-generated model card containing only metrics the code truly computes.
@@ -128,6 +130,23 @@ Example response:
 `features` is `[sepal length, sepal width, petal length, petal width]` in
 centimetres. A payload without exactly four features returns HTTP 422.
 
+Inspect what is being served with `GET /model`:
+
+```bash
+curl -s http://localhost:8000/model
+```
+
+```json
+{
+  "version": "0.1.0",
+  "algorithm": "StandardScaler + LogisticRegression",
+  "n_features": 4,
+  "classes": ["setosa", "versicolor", "virginica"],
+  "trained_at": "2026-08-06T12:00:00+00:00",
+  "artifact_path": "/app/model.joblib"
+}
+```
+
 ## Observability
 
 `GET /metrics` returns Prometheus text-format exposition, including:
@@ -147,7 +166,7 @@ Prometheus can auto-discover and scrape each pod.
 mlops-model-serving/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py          # FastAPI app: /health /ready /predict /metrics
+│   ├── main.py          # FastAPI app: /health /ready /model /predict /metrics
 │   └── model.py         # model load + inference (cached)
 ├── train.py             # train Iris -> model.joblib + model_card.md
 ├── tests/
@@ -176,8 +195,9 @@ pytest -q
 ```
 
 The test suite trains a throwaway model into a temp directory, then exercises
-`/health`, `/ready`, `/predict` (valid + invalid inputs), and `/metrics`
-through the FastAPI `TestClient` — no network or pre-existing artifact needed.
+`/health`, `/ready`, `/model`, `/predict` (valid + invalid inputs), and
+`/metrics` through the FastAPI `TestClient` — no network or pre-existing
+artifact needed.
 
 ## Roadmap
 

@@ -3,6 +3,7 @@
 Endpoints:
     GET  /health   -> liveness: process is up and serving.
     GET  /ready    -> readiness: model artifact is loaded and usable.
+    GET  /model    -> model metadata: version, algorithm, classes, trained-at.
     POST /predict   -> classify a single sample -> class + probabilities.
     POST /predict/batch -> classify many samples in one vectorised call.
     GET  /metrics   -> Prometheus exposition of request/inference metrics.
@@ -108,6 +109,28 @@ class HealthResponse(BaseModel):
     status: str
 
 
+class ModelInfoResponse(BaseModel):
+    """Output payload for /model."""
+
+    version: str = Field(..., description="Serving application version.")
+    algorithm: str = Field(
+        ..., description="Description of the served estimator / pipeline."
+    )
+    n_features: int = Field(
+        ..., description="Number of input features expected per sample."
+    )
+    classes: list[str] = Field(
+        ..., description="Ordered class names aligned with model class indices."
+    )
+    trained_at: str | None = Field(
+        None,
+        description="UTC ISO-8601 timestamp the model artifact was written, if known.",
+    )
+    artifact_path: str = Field(
+        ..., description="Filesystem path the model artifact was loaded from."
+    )
+
+
 # --- Endpoints --------------------------------------------------------------
 @app.get("/health", response_model=HealthResponse, tags=["ops"])
 def health() -> HealthResponse:
@@ -121,6 +144,29 @@ def ready() -> HealthResponse:
     if not model_module.is_ready():
         raise HTTPException(status_code=503, detail="model not loaded")
     return HealthResponse(status="ready")
+
+
+@app.get("/model", response_model=ModelInfoResponse, tags=["ops"])
+def model_info() -> ModelInfoResponse:
+    """Return metadata about the model currently being served.
+
+    Useful for provenance and debugging: which artifact, which algorithm, what
+    classes it predicts, and when it was trained. Returns 503 (mirroring
+    /ready) when no artifact is loadable.
+    """
+    try:
+        meta = model_module.metadata()
+    except ModelNotLoadedError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return ModelInfoResponse(
+        version=__version__,
+        algorithm=meta.algorithm,
+        n_features=meta.n_features,
+        classes=meta.classes,
+        trained_at=meta.trained_at,
+        artifact_path=meta.artifact_path,
+    )
 
 
 @app.post("/predict", response_model=PredictResponse, tags=["inference"])

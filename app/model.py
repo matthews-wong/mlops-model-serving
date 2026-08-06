@@ -7,6 +7,7 @@ from disk once on first use and reused for the process lifetime.
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -47,6 +48,28 @@ class Prediction:
     probabilities: list[float]
 
 
+@dataclass(frozen=True)
+class ModelMetadata:
+    """Descriptive metadata about the loaded model artifact.
+
+    Attributes:
+        algorithm: Human-readable description of the estimator (for a
+            ``Pipeline``, its steps joined, e.g. ``"StandardScaler +
+            LogisticRegression"``).
+        n_features: Number of input features the model expects per sample.
+        classes: Ordered class names, aligned with the model's class indices.
+        trained_at: UTC ISO-8601 timestamp derived from the artifact file's
+            modification time, or ``None`` if it cannot be determined.
+        artifact_path: Filesystem path the artifact was loaded from.
+    """
+
+    algorithm: str
+    n_features: int
+    classes: list[str]
+    trained_at: str | None
+    artifact_path: str
+
+
 class ModelNotLoadedError(RuntimeError):
     """Raised when inference is attempted before the model is available."""
 
@@ -76,6 +99,43 @@ def is_ready() -> bool:
         return True
     except Exception:  # noqa: BLE001 - readiness must never raise
         return False
+
+
+def metadata() -> ModelMetadata:
+    """Return descriptive metadata about the loaded model.
+
+    Loads the artifact (via the shared cache) so the reported algorithm and
+    feature/class shape reflect what is actually being served, not just static
+    constants.
+
+    Raises:
+        ModelNotLoadedError: If the model artifact is unavailable.
+    """
+    model = load_model()
+
+    # Describe a Pipeline by its steps; fall back to the estimator's type name.
+    steps = getattr(model, "steps", None)
+    if steps:
+        algorithm = " + ".join(type(step).__name__ for _, step in steps)
+    else:
+        algorithm = type(model).__name__
+
+    path = model_path()
+    try:
+        mtime = path.stat().st_mtime
+        trained_at = dt.datetime.fromtimestamp(
+            mtime, tz=dt.timezone.utc
+        ).isoformat()
+    except OSError:
+        trained_at = None
+
+    return ModelMetadata(
+        algorithm=algorithm,
+        n_features=N_FEATURES,
+        classes=list(CLASS_NAMES),
+        trained_at=trained_at,
+        artifact_path=str(path),
+    )
 
 
 def predict(features: list[float]) -> Prediction:

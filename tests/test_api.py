@@ -64,6 +64,22 @@ def test_ready_ok(client: TestClient) -> None:
     assert response.json() == {"status": "ready"}
 
 
+def test_model_metadata(client: TestClient) -> None:
+    """/model reports the served model's version, classes, and provenance."""
+    response = client.get("/model")
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["version"]  # non-empty serving version
+    assert body["n_features"] == 4
+    assert body["classes"] == ["setosa", "versicolor", "virginica"]
+    # The training pipeline is StandardScaler + LogisticRegression.
+    assert "LogisticRegression" in body["algorithm"]
+    # trained_at is derived from the freshly trained artifact's mtime.
+    assert body["trained_at"] is not None
+    assert body["artifact_path"].endswith("model.joblib")
+
+
 def test_predict_known_input(client: TestClient) -> None:
     """/predict returns a valid class + probabilities for a known sample."""
     response = client.post("/predict", json={"features": KNOWN_SETOSA})
